@@ -9,6 +9,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"bufio"
+	"bytes"
+	"io"
+	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -38,7 +42,7 @@ type CaddySmallShield struct {
 	Refresh        string        `json:"refresh,omitempty"`
     refreshEvery   time.Duration `json:"-"`
     ctx           caddy.Context `json:"-"`
-	state watchState   `json:"-"` // keeps ETag / Last-Modified
+	state WatchBlocklistState   `json:"-"` // keeps ETag / Last-Modified
 	mutex sync.RWMutex `json:"-"`
 	
 
@@ -198,7 +202,7 @@ func (m *CaddySmallShield) refreshLoop(ctx caddy.Context) {
 				}
 				m.mutex.Lock()
 				m.blacklistCidrs = tree
-				m.state = watchState{
+				m.state = WatchBlocklistState{
 					etag:         resp.Header.Get("ETag"),
 					lastModified: resp.Header.Get("Last-Modified"),
 				}
