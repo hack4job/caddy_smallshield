@@ -5,6 +5,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"io"
+	"bufio"
+	"bytes"
 )
 
 // Implements a decision tree for IP ranges. You feed it with IPv4 ranges ("192.168.1.2/24")
