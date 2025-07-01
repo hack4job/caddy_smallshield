@@ -25,11 +25,22 @@ func init() {
 	httpcaddyfile.RegisterHandlerDirective("caddy_smallshield", parseCaddyfile)
 }
 
+type WatchBlocklistState struct {
+    etag         string
+    lastModified string
+}
+
 type CaddySmallShield struct {
 	BlacklistURL string `json:"blacklist_url,omitempty"`
 	Whitelist    string `json:"whitelist,omitempty"`
 	ClosingHours string `json:"closing_hours,omitempty"`
 	LogBlockings string `json:"log_blockings,omitempty"`
+	Refresh        string        `json:"refresh,omitempty"`
+    refreshEvery   time.Duration `json:"-"`
+    ctx           caddy.Context `json:"-"`
+	state watchState   `json:"-"` // keeps ETag / Last-Modified
+	mutex sync.RWMutex `json:"-"`
+	
 
 	blacklistCidrs        *iptree.IPTree
 	whitelist             []string
@@ -68,6 +79,18 @@ func (m *CaddySmallShield) Provision(ctx caddy.Context) error {
 		m.blacklistCidrs = cidrs
 	} else {
 		m.blacklistCidrs = iptree.Empty()
+	}
+
+	if m.Refresh != "" {
+	    d, err := time.ParseDuration(m.Refresh)
+	    if err != nil {
+	        return fmt.Errorf("refresh: %w", err)
+	    }
+	    m.refreshEvery = d
+	}
+
+	if m.refreshEvery > 0 && m.BlacklistURL != "" {
+	    go m.refreshLoop(ctx)   // non-blocking
 	}
 
 	m.mutexForWhitelist.Lock()
@@ -127,12 +150,75 @@ func (m *CaddySmallShield) IsWhitelisted(ip string) bool {
 	return slices.Contains(m.whitelist, ip)
 }
 
+func (m *CaddySmallShield) refreshLoop(ctx caddy.Context) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	ticker := time.NewTicker(m.refreshEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			req, _ := http.NewRequestWithContext(ctx, http.MethodGet, m.BlacklistURL, nil)
+			m.mutex.RLock()
+			if m.state.etag != "" {
+				req.Header.Set("If-None-Match", m.state.etag)
+			}
+			if m.state.lastModified != "" {
+				req.Header.Set("If-Modified-Since", m.state.lastModified)
+			}
+			m.mutex.RUnlock()
+
+			resp, err := client.Do(req)
+			if err != nil {
+				m.logger.Warn("blacklist refresh: request failed", zap.Error(err))
+				continue
+			}
+			func() {
+				defer resp.Body.Close()
+
+				if resp.StatusCode == http.StatusNotModified {
+					return
+				}
+				if resp.StatusCode != http.StatusOK {
+					m.logger.Warn("blacklist refresh: unexpected status",
+						zap.Int("status", resp.StatusCode))
+					return
+				}
+
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					m.logger.Warn("blacklist refresh: read body failed", zap.Error(err))
+					return
+				}
+
+				tree, err := iptree.New(bytes.NewReader(body), false)
+				if err != nil {
+					m.logger.Warn("blacklist refresh: parse failed", zap.Error(err))
+					return
+				}
+				m.mutex.Lock()
+				m.blacklistCidrs = tree
+				m.state = watchState{
+					etag:         resp.Header.Get("ETag"),
+					lastModified: resp.Header.Get("Last-Modified"),
+				}
+				m.mutex.Unlock()
+
+				m.logger.Debug("blacklist updated",
+					zap.Int("entries", tree.IPRangesIngested()))
+			}()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 func (m CaddySmallShield) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	blockedReason := ""
 
 	var hour = time.Now().Hour()
 	if m.closingHours[hour] {
-		blockedReason = fmt.Sprintf("shop is closed, hour is %d and closing_hours is set to %s", hour, m.closingHoursPrintable)
+		blockedReason = fmt.Sprintf("Hackerbase is closed, hour is %d and closing_hours is set to %s", hour, m.closingHoursPrintable)
 	} else {
 		var ip = cutToColon(r.RemoteAddr)
 		if m.IsBlacklisted(ip) && !m.IsWhitelisted(ip) {
@@ -168,6 +254,10 @@ func (m *CaddySmallShield) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.Args(&m.LogBlockings) {
 					return d.Err("invalid log_blockings configuration")
 				}
+			case "refresh":
+			    var s string
+			    if !d.Args(&s) { return d.Err("invalid refresh configuration") }
+			    m.Refresh = s
 			default:
 				return d.Errf("unknown directive: %s", d.Val())
 			}
