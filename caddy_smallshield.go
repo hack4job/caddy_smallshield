@@ -9,10 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"bufio"
 	"bytes"
 	"io"
-	"strings"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
@@ -42,7 +40,7 @@ type CaddySmallShield struct {
 	Refresh        string        `json:"refresh,omitempty"`
     refreshEvery   time.Duration `json:"-"`
     ctx           caddy.Context `json:"-"`
-	state WatchBlocklistState   `json:"-"` // keeps ETag / Last-Modified
+	state WatchBlocklistState   `json:"-"`
 	mutex sync.RWMutex `json:"-"`
 	
 

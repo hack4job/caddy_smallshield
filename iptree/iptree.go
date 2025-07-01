@@ -178,29 +178,38 @@ func Empty() *IPTree {
 	return NewIPTree(false)
 }
 
+func New(r io.Reader, threadSafe bool) (*IPTree, error) {
+	ipt := NewIPTree(threadSafe)
+
+	if ipt.threadSafe {
+		ipt.mutex.Lock()
+		defer ipt.mutex.Unlock()
+	}
+
+	sc := bufio.NewScanner(r)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		cidr := line2IPRange(line)
+		if cidr == "" {
+			continue
+		}
+
+		if err := ipt.ingest(cidr); err != nil {
+			return nil, err
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return ipt, nil
+}
+
 func NewFromURL(url string, threadSafe bool) (*IPTree, error) {
 	lines, err := fetchBodyLinesWithRetries(url)
 	if err != nil {
 		return nil, err
 	}
 
-	ipt := NewIPTree(threadSafe)
-	if ipt.threadSafe {
-		ipt.mutex.Lock()
-		defer ipt.mutex.Unlock()
-	}
-	for _, cidr := range lines {
-		if strings.HasPrefix(cidr, ";") || strings.HasPrefix(cidr, "#") {
-			continue
-		}
-		cidr = line2IPRange(cidr)
-		if cidr != "" {
-			err := ipt.ingest(cidr)
-			if err != nil {
-				// TODO silent? I cannot let it stop everything
-			}
-		}
-	}
-
-	return ipt, nil
+	data := bytes.NewBufferString(strings.Join(lines, "\n"))
+	return New(data, threadSafe)
 }
