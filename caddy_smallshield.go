@@ -153,6 +153,9 @@ func (m *CaddySmallShield) IsWhitelisted(ip string) bool {
 }
 
 func (m *CaddySmallShield) refreshLoop(ctx caddy.Context) {
+	if m.logBlockings {
+		m.logger.Sugar().Infof("Refreshing: %s", m.BlacklistURL)
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
 	ticker := time.NewTicker(m.refreshEvery)
 	defer ticker.Stop()
